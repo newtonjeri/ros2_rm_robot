@@ -25,7 +25,7 @@
 
 #     # arm_joints: ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7"]
 #     arm_joints: ["R_joint1", "R_joint2", "R_joint3", "R_joint4", "R_joint5", "R_joint6", "R_joint7"]
-/**:
+rm_driver:
   ros__parameters:
     #robot param
     arm_ip: "192.168.120.23"        #设置TCP连接时的IP

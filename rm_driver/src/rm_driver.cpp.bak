@@ -340,7 +340,6 @@ void RmArm::Arm_Movej_CANFD_Callback(rm_ros_interfaces::msg::Jointpos::SharedPtr
     // res = Rm_Api.Service_Movej_CANFD_With_Radio(m_sockhand, joint, follow, expand, trajectory_mode, radio);
     // if(stop_flag == false)
     res = Rm_Api.rm_movej_canfd(robot_handle, joint, follow, expand, trajectory_mode, radio);
-    RCLCPP_WARN(this->get_logger(), "Movej CANFD, follow: %d, expand: %f, trajectory_mode: %d, radio: %d", follow, expand, trajectory_mode, radio);
     
     movej_CANFD_data.data = res;
     if(movej_CANFD_data.data != 0)
@@ -4053,7 +4052,7 @@ UdpPublisherNode::UdpPublisherNode():
         Heart_Timer = this->create_wall_timer(std::chrono::milliseconds(500), 
         std::bind(&UdpPublisherNode::heart_timer_callback,this), callback_group_time2_);
         /********************************************************************UDP传输数据**********************************************************/
-        Joint_Position_Result = this->create_publisher<sensor_msgs::msg::JointState>("arm_joint_states", 10);                                //发布当前的关节角度(相对话题,按命名空间区分)
+        Joint_Position_Result = this->create_publisher<sensor_msgs::msg::JointState>("joint_states", 10);                                    //发布当前的关节角度
         Arm_Position_Result = this->create_publisher<geometry_msgs::msg::Pose>("rm_driver/udp_arm_position", 10);                            //发布当前的关节姿态
         Six_Force_Result = this->create_publisher<rm_ros_interfaces::msg::Sixforce>("rm_driver/udp_six_force", 10);                          //发布当前的原始六维力数据
         Six_Zero_Force_Result = this->create_publisher<rm_ros_interfaces::msg::Sixforce>("rm_driver/udp_six_zero_force", 10);                //发布当前标坐标系下六维力数据
