@@ -1,15 +1,32 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
+from launch.substitutions import LaunchConfiguration
+from launch.actions import DeclareLaunchArgument
+
 def generate_launch_description():
+
+    arm_ns_arg = DeclareLaunchArgument(
+        'arm_namespace', default_value='',
+        description='Namespace for the arm (e.g., left_arm or right_arm)')
+
+    action_name_arg = DeclareLaunchArgument(
+        'action_name', default_value='/left_arm_controller/follow_joint_trajectory',
+        description='Action server name for follow joint trajectory (use absolute path e.g. /left_arm_controller/follow_joint_trajectory)')
+
     ld = LaunchDescription()
+    ld.add_action(arm_ns_arg)
+    ld.add_action(action_name_arg)
+
     control_node = Node(
-    package='rm_control', #节点所在的功能包
-    executable='rm_control', #表示要运行的可执行文件名或脚本名字.py
-    parameters= [
-                    {'follow': True},
-                    {'arm_type': 75}
-                ],             #接入参数文件
-    output='screen', #用于将话题信息打印到屏幕
+        package='rm_control',
+        executable='rm_control',
+        namespace=LaunchConfiguration('arm_namespace'),
+        parameters=[
+            {'follow': True},
+            {'arm_type': 75},
+            {'action_name': LaunchConfiguration('action_name')}
+        ],
+        output='screen',
     )
 
     ld.add_action(control_node)
