@@ -57,6 +57,9 @@ ament_target_dependencies(rm_driver rclcpp std_msgs sensor_msgs rm_ros_interface
 
 install(TARGETS  rm_driver  DESTINATION lib/${PROJECT_NAME})
 
+install(PROGRAMS scripts/joint_state_merger.py
+  DESTINATION lib/${PROJECT_NAME})
+
 install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME})
 ament_package()
