@@ -4,24 +4,34 @@ import yaml
 import launch_ros
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.substitutions import Command, LaunchConfiguration
-from ament_index_python.packages import get_package_share_directory
+from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
+from launch.actions import DeclareLaunchArgument
+from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
 
-    arm_config = os.path.join(get_package_share_directory('rm_driver'),'config','rm_75_config.yaml')
+    # Declare launch arguments for namespace and config file
+    arm_ns_arg = DeclareLaunchArgument(
+        'arm_namespace', default_value='',
+        description='Namespace for the arm (e.g., left_arm or right_arm)')
 
-    with open(arm_config,'r') as f:
-        params = yaml.safe_load(f)["rm_driver"]["ros__parameters"]
+    config_file_arg = DeclareLaunchArgument(
+        'config_file', default_value='rm_75_config.yaml',
+        description='Config YAML file name (e.g., rm_75_left_config.yaml)')
+
+    arm_config = PathJoinSubstitution([
+        FindPackageShare('rm_driver'), 'config', LaunchConfiguration('config_file')
+    ])
 
     return LaunchDescription([
+        arm_ns_arg,
+        config_file_arg,
 
         Node(
-            package= "rm_driver",                 #功能包。
-            executable= "rm_driver",         #节点。
-            parameters= [arm_config
-                ],             #接入参数文件
-            output= 'screen'
-            )
-
+            package="rm_driver",
+            executable="rm_driver",
+            namespace=LaunchConfiguration('arm_namespace'),
+            parameters=[arm_config],
+            output='screen'
+        )
     ])
