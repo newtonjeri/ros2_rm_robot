@@ -31,6 +31,30 @@
         <joint name="joint6" value="0.8513"/>
         <joint name="joint7" value="0"/>
     </group_state>
+
+    <!-- Left rest pose -->
+    <group_state name="left_rest" group="rm_group">
+        <joint name="joint1" value="-0.663"/>
+        <joint name="joint2" value="-1.850"/>
+        <joint name="joint3" value="0.105"/>
+        <joint name="joint4" value="1.692"/>
+        <joint name="joint5" value="0.593"/>
+        <joint name="joint6" value="1.256"/>
+        <joint name="joint7" value="2.827"/>
+    </group_state>
+
+    <!-- Right rest pose -->
+     <group_state name="right_rest" group="rm_group">
+        <joint name="joint1" value="-2.478"/>
+        <joint name="joint2" value="1.850"/>
+        <joint name="joint3" value="-0.105"/>
+        <joint name="joint4" value="-1.692"/>
+        <joint name="joint5" value="-0.593"/>
+        <joint name="joint6" value="-1.256"/>
+        <joint name="joint7" value="2.827"/>
+    </group_state>
+
+
     <!--DISABLE COLLISIONS: By default it is assumed that any link of the robot could potentially come into collision with any other link in the robot. This tag disables collision checking between a specified pair of links. -->
     <disable_collisions link1="Link1" link2="Link2" reason="Adjacent"/>
     <disable_collisions link1="Link1" link2="Link3" reason="Never"/>
