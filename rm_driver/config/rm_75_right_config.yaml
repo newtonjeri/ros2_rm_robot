@@ -8,7 +8,7 @@
     arm_dof: 7                    #机械臂自由度设置
 
     udp_ip: "192.168.120.10"        #设置udp主动上报IP (右臂)
-    udp_cycle: 5                  #udp主动上报周期，需要是5的倍数。
+    udp_cycle: 10                  #udp主动上报周期，需要是5的倍数。
     udp_port: 8090                #设置udp主动上报端口 (不同端口避免冲突)
     udp_force_coordinate: 0       #设置系统受力时六维力的基准坐标，0为传感器坐标系 1为当前工作坐标系 2为当前工具坐标系
     udp_hand: true               #设置灵巧手udp主动上报使能
@@ -25,3 +25,4 @@
 
     arm_joints: ["R_joint1", "R_joint2", "R_joint3", "R_joint4", "R_joint5", "R_joint6", "R_joint7"]
     pole_joint_name: "R_sliding_plate_joint"
+    hand_joint_names: ["IRH_right_thumb_1_joint", "IRH_right_thumb_2_joint", "IRH_right_index_1_joint", "IRH_right_middle_1_joint", "IRH_right_ring_1_joint", "IRH_right_little_1_joint"]
