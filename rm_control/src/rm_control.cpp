@@ -293,6 +293,33 @@ Rm_Control::Rm_Control(std::string name) : Node(name)
     Get_Move_Stop_Cmd = this->create_subscription<std_msgs::msg::Empty>("rm_driver/move_stop_cmd",rclcpp::ParametersQoS(),
         std::bind(&Rm_Control::get_move_stop_callback,this,std::placeholders::_1));
 
+    // ======================== Pole (Lift) Support ========================
+    this->declare_parameter<std::string>("pole_action_name", "");
+    this->get_parameter("pole_action_name", pole_action_name_);
+
+    if(!pole_action_name_.empty())
+    {
+        RCLCPP_INFO(this->get_logger(), "Pole support enabled. Action: %s", pole_action_name_.c_str());
+
+        // Create pole action server (completely separate from arm action server)
+        this->pole_action_server_ = rclcpp_action::create_server<FollowJointTrajectory>(
+                    this, pole_action_name_,
+                    std::bind(&Rm_Control::pole_handle_goal, this, _1, _2),
+                    std::bind(&Rm_Control::pole_handle_cancel, this, _1),
+                    std::bind(&Rm_Control::pole_handle_accepted, this, _1));
+
+        // Publisher for lift height command (non-blocking, fire-and-forget)
+        lift_height_publisher_ = this->create_publisher<rm_ros_interfaces::msg::Liftheight>("rm_driver/set_lift_height_cmd", qos);
+
+        // Subscriber for UDP lift state feedback
+        lift_state_subscriber_ = this->create_subscription<rm_ros_interfaces::msg::Udpliftstate>(
+            "rm_driver/udp_lift_state", 10,
+            std::bind(&Rm_Control::lift_state_callback, this, std::placeholders::_1));
+    }
+    else
+    {
+        RCLCPP_INFO(this->get_logger(), "Pole support disabled (pole_action_name not set).");
+    }
 }
 
 rclcpp_action::GoalResponse Rm_Control::handle_goal(const rclcpp_action::GoalUUID &uuid, std::shared_ptr<const FollowJointTrajectory::Goal> goal)
@@ -736,6 +763,96 @@ void Rm_Control::get_move_stop_callback(const std_msgs::msg::Empty::SharedPtr ms
     point_changed=false;
     //RCLCPP_INFO(this->get_logger(), "move stop is true!!! ");
 }
+
+// ======================== Pole (Lift) Action Callbacks ========================
+
+rclcpp_action::GoalResponse Rm_Control::pole_handle_goal(const rclcpp_action::GoalUUID &uuid, std::shared_ptr<const FollowJointTrajectory::Goal> goal)
+{
+    (void)uuid;
+    int pointSize = goal->trajectory.points.size();
+    RCLCPP_INFO(this->get_logger(), "Pole: Received goal with %d waypoints, joint_names: %zu", pointSize, goal->trajectory.joint_names.size());
+
+    if(pointSize <= 0)
+    {
+        RCLCPP_WARN(this->get_logger(), "Pole: Rejecting goal with 0 waypoints");
+        return rclcpp_action::GoalResponse::REJECT;
+    }
+
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+}
+
+rclcpp_action::CancelResponse Rm_Control::pole_handle_cancel(const std::shared_ptr<GoalHandleFJT> goal_handle)
+{
+    (void)goal_handle;
+    RCLCPP_INFO(this->get_logger(), "Pole: Received cancel request");
+    return rclcpp_action::CancelResponse::ACCEPT;
+}
+
+void Rm_Control::pole_handle_accepted(const std::shared_ptr<GoalHandleFJT> goal_handle)
+{
+    using std::placeholders::_1;
+    std::thread{std::bind(&Rm_Control::pole_execute_move, this, _1), goal_handle}
+    .detach();
+}
+
+void Rm_Control::pole_execute_move(const std::shared_ptr<GoalHandleFJT> goal_handle)
+{
+    const auto goal = goal_handle->get_goal();
+    auto result = std::make_shared<FollowJointTrajectory::Result>();
+    int point_num = goal->trajectory.points.size();
+
+    if(point_num <= 0)
+    {
+        result->error_code = -1;
+        result->error_string = "No waypoints in pole trajectory";
+        goal_handle->abort(result);
+        return;
+    }
+
+    // Use ONLY the last waypoint (no interpolation for pole)
+    auto last_point = goal->trajectory.points[point_num - 1];
+
+    if(last_point.positions.empty())
+    {
+        result->error_code = -1;
+        result->error_string = "Last waypoint has no position data";
+        goal_handle->abort(result);
+        return;
+    }
+
+    // The pole joint is the first (and only) joint in this trajectory
+    double moveit_position = last_point.positions[0];  // in meters (MoveIt prismatic joint)
+
+    // Convert MoveIt meters -> hardware units: meters * 1000 * (2/3)
+    double height_hw = moveit_position * 1000.0 * MOVEIT_TO_HW;
+
+    // Clamp to valid range (0-200 hw units for the custom 300mm pole)
+    if(height_hw < 0.0) height_hw = 0.0;
+    if(height_hw > 200.0) height_hw = 200.0;
+
+    RCLCPP_INFO(this->get_logger(), "Pole: MoveIt pos=%.4f m -> HW height=%.1f units, speed=100%%",
+                moveit_position, height_hw);
+
+    // Publish lift height command (fire-and-forget)
+    rm_ros_interfaces::msg::Liftheight lift_cmd;
+    lift_cmd.height = static_cast<uint16_t>(height_hw);
+    lift_cmd.speed = 100;  // Maximum speed
+    lift_cmd.block = false; // Non-blocking
+    lift_height_publisher_->publish(lift_cmd);
+
+    // Fire-and-forget: succeed immediately
+    result->error_code = 0;
+    result->error_string = "";
+    goal_handle->succeed(result);
+    RCLCPP_INFO(this->get_logger(), "Pole: Goal succeeded (fire-and-forget)");
+}
+
+void Rm_Control::lift_state_callback(const rm_ros_interfaces::msg::Udpliftstate::SharedPtr msg)
+{
+    // Cache the current lift height for potential future use (monitoring/feedback)
+    current_lift_height_hw_.store(static_cast<double>(msg->height));
+}
+
 /* 主函数主要用于动作订阅和套接字通信 */
 int main(int argc, char** argv)
 {

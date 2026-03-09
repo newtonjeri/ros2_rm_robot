@@ -12,11 +12,15 @@
 
 //RM Robot msg
 #include "rm_ros_interfaces/msg/jointpos.hpp"
+#include "rm_ros_interfaces/msg/liftheight.hpp"
+#include "rm_ros_interfaces/msg/udpliftstate.hpp"
 //#include "rm_ros_interfaces/msg/jointpos75.hpp"
 
 /* 使用变长数组 */
 #include <vector>
 #include <algorithm>
+#include <atomic>
+#include <mutex>
 
 using namespace std;
 
@@ -53,6 +57,34 @@ private:
     void execute_move(const std::shared_ptr<GoalHandleFJT> goal_handle);
     void handle_accepted(const std::shared_ptr<GoalHandleFJT> goal_handle);
     void get_move_stop_callback(std_msgs::msg::Empty::SharedPtr msg);
+
+    // ======================== Pole (Lift) Support ========================
+    // Pole action server (separate from arm action server)
+    std::string pole_action_name_;
+    rclcpp_action::Server<FollowJointTrajectory>::SharedPtr pole_action_server_;
+
+    // Publisher for lift height command (fire-and-forget to driver)
+    rclcpp::Publisher<rm_ros_interfaces::msg::Liftheight>::SharedPtr lift_height_publisher_;
+
+    // Subscriber for UDP lift state feedback
+    rclcpp::Subscription<rm_ros_interfaces::msg::Udpliftstate>::SharedPtr lift_state_subscriber_;
+
+    // Cached lift state from UDP feedback
+    std::atomic<double> current_lift_height_hw_{0.0};  // in hardware units
+    std::mutex pole_mutex_;
+
+    // Pole action callbacks
+    rclcpp_action::GoalResponse pole_handle_goal(const rclcpp_action::GoalUUID &uuid, std::shared_ptr<const FollowJointTrajectory::Goal> goal);
+    rclcpp_action::CancelResponse pole_handle_cancel(const std::shared_ptr<GoalHandleFJT> goal_handle);
+    void pole_handle_accepted(const std::shared_ptr<GoalHandleFJT> goal_handle);
+    void pole_execute_move(const std::shared_ptr<GoalHandleFJT> goal_handle);
+
+    // UDP lift state callback
+    void lift_state_callback(const rm_ros_interfaces::msg::Udpliftstate::SharedPtr msg);
+
+    // Unit conversion constants
+    static constexpr double MOVEIT_TO_HW = 2.0 / 3.0;   // MoveIt meters -> mm -> HW: * 1000 * (2/3)
+    static constexpr double HW_TO_MOVEIT = 1.5;          // HW -> mm -> MoveIt meters: * 1.5 / 1000
 };
 
 #endif // Rm_Control_H

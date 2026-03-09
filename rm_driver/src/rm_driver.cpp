@@ -3933,6 +3933,11 @@ void UdpPublisherNode::udp_timer_callback()
         if(udp_lift_state_g == true)
         {
             this->Lift_State_Result->publish(udp_lift_data_);
+            // Also update pole position in joint_states (HW units -> meters: * 1.5 / 1000.0)
+            if(!pole_joint_name_g.empty())
+            {
+                udp_real_joint_.position[arm_dof_g] = udp_lift_data_.height * 1.5 / 1000.0;
+            }
         }
         if(udp_expand_state_g == true)
         {
@@ -4130,6 +4135,9 @@ RmArm::RmArm():
     this->declare_parameter<bool>("udp_lift_state", udp_lift_state_);
     this->get_parameter<bool>("udp_lift_state", udp_lift_state_);
 
+    this->declare_parameter<std::string>("pole_joint_name", pole_joint_name_);
+    this->get_parameter<std::string>("pole_joint_name", pole_joint_name_);
+
     this->declare_parameter<bool>("udp_expand_state", udp_expand_state_);
     this->get_parameter<bool>("udp_expand_state", udp_expand_state_);
 
@@ -4187,6 +4195,7 @@ RmArm::RmArm():
     rm_plus_base_g = udp_rm_plus_base_;
     rm_plus_state_g = udp_rm_plus_state_;
     udp_lift_state_g = udp_lift_state_;
+    pole_joint_name_g = pole_joint_name_;
     udp_expand_state_g = udp_expand_state_;
     udp_joint_speed_state_g = udp_joint_speed_state_;
     udp_arm_current_status_state_g = udp_arm_current_status_state_;
@@ -4204,8 +4213,13 @@ RmArm::RmArm():
     usleep(2000000);
     RCLCPP_INFO (this->get_logger(),"%s_driver is running ",arm_type_.c_str());
     /************************************************初始化变量********************************************/
-    udp_real_joint_.name.resize(arm_dof_);
-    udp_real_joint_.position.resize(arm_dof_);
+    int joint_state_size = arm_dof_;
+    if(udp_lift_state_ && !pole_joint_name_.empty())
+    {
+        joint_state_size = arm_dof_ + 1;  // Extra slot for pole/lift joint
+    }
+    udp_real_joint_.name.resize(joint_state_size);
+    udp_real_joint_.position.resize(joint_state_size);
     udp_joint_error_code_.joint_error.resize(arm_dof_);
     Arm_original_state.joint.resize(arm_dof_);
     Arm_state.joint.resize(arm_dof_);
@@ -4222,6 +4236,13 @@ RmArm::RmArm():
             udp_real_joint_.name[i] = arm_joints[i];
             // RCLCPP_INFO (this->get_logger(),"arm_joints[%d]: %s",  i,  arm_joints[i].c_str());
         }
+    }
+    // Set pole joint name at position after arm joints
+    if(udp_lift_state_ && !pole_joint_name_.empty())
+    {
+        udp_real_joint_.name[arm_dof_] = pole_joint_name_;
+        udp_real_joint_.position[arm_dof_] = 0.0;
+        RCLCPP_INFO(this->get_logger(), "Pole joint '%s' added at position %d in joint_states", pole_joint_name_.c_str(), arm_dof_);
     }
     /**************************************************end**********************************************/
     

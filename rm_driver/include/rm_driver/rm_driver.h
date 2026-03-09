@@ -153,6 +153,8 @@ bool rm_plus_state_g = false;
 bool udp_expand_state_g = true;
 // 升降关节状态信息
 bool udp_lift_state_g = false;
+// 升降关节名称(用于joint_states)
+std::string pole_joint_name_g = "";
 // 关节速度状态信息
 bool udp_joint_speed_state_g = true;
 // 机械臂状态信息
@@ -797,6 +799,7 @@ private:
     bool udp_rm_plus_state_ = false;                   //末端设备状态信息udp发布
     bool udp_joint_speed_state_= false;                //设置关节速度主动上报
     bool udp_lift_state_= false;                       //设置升降关节主动上报
+    std::string pole_joint_name_;                       //升降关节名称
     bool udp_expand_state_= false;                     //设置拓展关节主动上报
     bool udp_arm_current_status_state_= false;         //设置机械臂状态主动上报
     bool udp_aloha_state_= false;                      //aloha状态主动上报
