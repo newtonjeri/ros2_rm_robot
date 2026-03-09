@@ -3939,6 +3939,16 @@ void UdpPublisherNode::udp_timer_callback()
                 udp_real_joint_.position[arm_dof_g] = udp_lift_data_.height * 1.5 / 1000.0;
             }
         }
+        // Update hand joint positions in joint_states from feedback
+        if(!hand_joint_names_g.empty() && hand_joint_names_g.size() == 6)
+        {
+            int hand_start_idx = arm_dof_g + ((!pole_joint_name_g.empty() && udp_lift_state_g) ? 1 : 0);
+            std::lock_guard<std::mutex> lock(hand_feedback_mutex_g);
+            for(int i = 0; i < 6; i++)
+            {
+                udp_real_joint_.position[hand_start_idx + i] = hand_joint_feedback_g[i];
+            }
+        }
         if(udp_expand_state_g == true)
         {
             this->Expand_State_Result->publish(udp_expand_data_);
@@ -4018,6 +4028,19 @@ void UdpPublisherNode::heart_timer_callback()
     }
 }
 
+void UdpPublisherNode::hand_feedback_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
+{
+    // Receive hand joint feedback radians in MoveIt order from rm_control
+    if(msg->data.size() >= 6)
+    {
+        std::lock_guard<std::mutex> lock(hand_feedback_mutex_g);
+        for(int i = 0; i < 6; i++)
+        {
+            hand_joint_feedback_g[i] = msg->data[i];
+        }
+    }
+}
+
 bool UdpPublisherNode::read_data()
 {
     memset(udp_socket_buffer, 0, sizeof(udp_socket_buffer));
@@ -4082,6 +4105,14 @@ UdpPublisherNode::UdpPublisherNode():
         Lift_State_Result = this->create_publisher<rm_ros_interfaces::msg::Udpliftstate>("rm_driver/udp_lift_state",10);
         Expand_State_Result = this->create_publisher<rm_ros_interfaces::msg::Udpexpandstate>("rm_driver/udp_expand_state",10);
         Aloha_State_Result = this->create_publisher<rm_ros_interfaces::msg::Alohastate>("rm_driver/udp_aloha_state",10);
+        // Hand open-loop feedback subscriber (from rm_control)
+        if(!hand_joint_names_g.empty() && hand_joint_names_g.size() == 6)
+        {
+            Hand_Feedback_Sub = this->create_subscription<std_msgs::msg::Float64MultiArray>(
+                "rm_driver/hand_joint_feedback", 10,
+                std::bind(&UdpPublisherNode::hand_feedback_callback, this, std::placeholders::_1));
+            RCLCPP_INFO(this->get_logger(), "Hand feedback subscriber created for joint_states integration");
+        }
     }
 
 
@@ -4137,6 +4168,9 @@ RmArm::RmArm():
 
     this->declare_parameter<std::string>("pole_joint_name", pole_joint_name_);
     this->get_parameter<std::string>("pole_joint_name", pole_joint_name_);
+
+    this->declare_parameter("hand_joint_names", hand_joint_names_);
+    this->get_parameter("hand_joint_names", hand_joint_names_);
 
     this->declare_parameter<bool>("udp_expand_state", udp_expand_state_);
     this->get_parameter<bool>("udp_expand_state", udp_expand_state_);
@@ -4196,6 +4230,7 @@ RmArm::RmArm():
     rm_plus_state_g = udp_rm_plus_state_;
     udp_lift_state_g = udp_lift_state_;
     pole_joint_name_g = pole_joint_name_;
+    hand_joint_names_g = hand_joint_names_;
     udp_expand_state_g = udp_expand_state_;
     udp_joint_speed_state_g = udp_joint_speed_state_;
     udp_arm_current_status_state_g = udp_arm_current_status_state_;
@@ -4217,6 +4252,10 @@ RmArm::RmArm():
     if(udp_lift_state_ && !pole_joint_name_.empty())
     {
         joint_state_size = arm_dof_ + 1;  // Extra slot for pole/lift joint
+    }
+    if(!hand_joint_names_.empty() && hand_joint_names_.size() == 6)
+    {
+        joint_state_size += 6;  // Extra 6 slots for hand joints
     }
     udp_real_joint_.name.resize(joint_state_size);
     udp_real_joint_.position.resize(joint_state_size);
@@ -4243,6 +4282,17 @@ RmArm::RmArm():
         udp_real_joint_.name[arm_dof_] = pole_joint_name_;
         udp_real_joint_.position[arm_dof_] = 0.0;
         RCLCPP_INFO(this->get_logger(), "Pole joint '%s' added at position %d in joint_states", pole_joint_name_.c_str(), arm_dof_);
+    }
+    // Set hand joint names at positions after arm + pole joints
+    if(!hand_joint_names_.empty() && hand_joint_names_.size() == 6)
+    {
+        int hand_start_idx = arm_dof_ + ((udp_lift_state_ && !pole_joint_name_.empty()) ? 1 : 0);
+        for(int i = 0; i < 6; i++)
+        {
+            udp_real_joint_.name[hand_start_idx + i] = hand_joint_names_[i];
+            udp_real_joint_.position[hand_start_idx + i] = 0.0;
+        }
+        RCLCPP_INFO(this->get_logger(), "Hand joints added at positions %d-%d in joint_states", hand_start_idx, hand_start_idx + 5);
     }
     /**************************************************end**********************************************/
     
