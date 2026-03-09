@@ -320,6 +320,51 @@ Rm_Control::Rm_Control(std::string name) : Node(name)
     {
         RCLCPP_INFO(this->get_logger(), "Pole support disabled (pole_action_name not set).");
     }
+
+    // ======================== Hand (Dexterous Hand) Support ========================
+    this->declare_parameter<std::string>("hand_action_name", "");
+    this->get_parameter("hand_action_name", hand_action_name_);
+
+    this->declare_parameter<std::string>("hand_feedback_mode", "open_loop");
+    this->get_parameter("hand_feedback_mode", hand_feedback_mode_);
+
+    if(!hand_action_name_.empty())
+    {
+        enable_hand_ = true;
+        RCLCPP_INFO(this->get_logger(), "Hand support enabled. Action: %s, Feedback: %s",
+                    hand_action_name_.c_str(), hand_feedback_mode_.c_str());
+
+        // Create hand action server (completely separate from arm and pole)
+        this->hand_action_server_ = rclcpp_action::create_server<FollowJointTrajectory>(
+                    this, hand_action_name_,
+                    std::bind(&Rm_Control::hand_handle_goal, this, _1, _2),
+                    std::bind(&Rm_Control::hand_handle_cancel, this, _1),
+                    std::bind(&Rm_Control::hand_handle_accepted, this, _1));
+
+        // Publisher for hand angle command (to driver)
+        hand_angle_publisher_ = this->create_publisher<rm_ros_interfaces::msg::Handangle>("rm_driver/set_hand_angle_cmd", qos);
+
+        // Publisher for open-loop feedback (commanded radians -> driver joint_states)
+        hand_feedback_publisher_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("rm_driver/hand_joint_feedback", qos);
+
+        // Subscribe to UDP hand status if in udp mode
+        if(hand_feedback_mode_ == "udp")
+        {
+            hand_status_subscriber_ = this->create_subscription<rm_ros_interfaces::msg::Handstatus>(
+                "rm_driver/udp_hand_status", 10,
+                std::bind(&Rm_Control::hand_state_callback, this, std::placeholders::_1));
+        }
+
+        // Initialize hand joint radians to 0 (all fingers open)
+        for(int i = 0; i < HAND_DOF; i++)
+        {
+            hand_joint_radians_[i].store(0.0);
+        }
+    }
+    else
+    {
+        RCLCPP_INFO(this->get_logger(), "Hand support disabled (hand_action_name not set).");
+    }
 }
 
 rclcpp_action::GoalResponse Rm_Control::handle_goal(const rclcpp_action::GoalUUID &uuid, std::shared_ptr<const FollowJointTrajectory::Goal> goal)
@@ -851,6 +896,159 @@ void Rm_Control::lift_state_callback(const rm_ros_interfaces::msg::Udpliftstate:
 {
     // Cache the current lift height for potential future use (monitoring/feedback)
     current_lift_height_hw_.store(static_cast<double>(msg->height));
+}
+
+// ======================== Hand (Dexterous Hand) Action Callbacks ========================
+
+rclcpp_action::GoalResponse Rm_Control::hand_handle_goal(const rclcpp_action::GoalUUID &uuid, std::shared_ptr<const FollowJointTrajectory::Goal> goal)
+{
+    (void)uuid;
+    int pointSize = goal->trajectory.points.size();
+    RCLCPP_INFO(this->get_logger(), "Hand: Received goal with %d waypoints, joint_names: %zu", pointSize, goal->trajectory.joint_names.size());
+
+    if(pointSize <= 0)
+    {
+        RCLCPP_WARN(this->get_logger(), "Hand: Rejecting goal with 0 waypoints");
+        return rclcpp_action::GoalResponse::REJECT;
+    }
+
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+}
+
+rclcpp_action::CancelResponse Rm_Control::hand_handle_cancel(const std::shared_ptr<GoalHandleFJT> goal_handle)
+{
+    (void)goal_handle;
+    RCLCPP_INFO(this->get_logger(), "Hand: Received cancel request");
+    return rclcpp_action::CancelResponse::ACCEPT;
+}
+
+void Rm_Control::hand_handle_accepted(const std::shared_ptr<GoalHandleFJT> goal_handle)
+{
+    using std::placeholders::_1;
+    std::thread{std::bind(&Rm_Control::hand_execute_move, this, _1), goal_handle}
+    .detach();
+}
+
+void Rm_Control::hand_execute_move(const std::shared_ptr<GoalHandleFJT> goal_handle)
+{
+    const auto goal = goal_handle->get_goal();
+    auto result = std::make_shared<FollowJointTrajectory::Result>();
+    int point_num = goal->trajectory.points.size();
+
+    if(point_num <= 0)
+    {
+        result->error_code = -1;
+        result->error_string = "No waypoints in hand trajectory";
+        goal_handle->abort(result);
+        return;
+    }
+
+    // Use ONLY the last waypoint (no interpolation for hand)
+    auto last_point = goal->trajectory.points[point_num - 1];
+
+    if(last_point.positions.size() < static_cast<size_t>(HAND_DOF))
+    {
+        result->error_code = -1;
+        result->error_string = "Last waypoint has insufficient position data (need 6 DOF)";
+        goal_handle->abort(result);
+        RCLCPP_ERROR(this->get_logger(), "Hand: positions size=%zu, need %d", last_point.positions.size(), HAND_DOF);
+        return;
+    }
+
+    // Extract radian values in MoveIt order
+    // MoveIt order: [thumb1_flex, thumb2_rot, index, middle, ring, little]
+    double moveit_radians[HAND_DOF];
+    for(int i = 0; i < HAND_DOF; i++)
+    {
+        moveit_radians[i] = last_point.positions[i];
+    }
+
+    // Build Handangle message: convert MoveIt radians -> HW 0-1000 with reordering
+    // HW order: [little(0), ring(1), middle(2), index(3), thumb_flex(4), thumb_rot(5)]
+    // HW 1000 = open (0 rad), HW 0 = full flexion (max_rad)
+    rm_ros_interfaces::msg::Handangle hand_cmd;
+    for(int mi = 0; mi < HAND_DOF; mi++)
+    {
+        double angle_rad = moveit_radians[mi];
+        double max_r = HAND_MAX_RAD[mi];
+
+        // Clamp to [0, max_rad]
+        if(angle_rad < 0.0) angle_rad = 0.0;
+        if(angle_rad > max_r) angle_rad = max_r;
+
+        // Scale to 0-1000
+        int scaled = static_cast<int>((angle_rad / max_r) * 1000.0);
+        if(scaled < 0) scaled = 0;
+        if(scaled > 1000) scaled = 1000;
+
+        // Invert: HW 1000 = open (0 rad), HW 0 = closed (max_rad)
+        int hw_value = 1000 - scaled;
+
+        // Map MoveIt index -> HW index
+        int hw_idx = HAND_MOVEIT_TO_HW[mi];
+        hand_cmd.hand_angle[hw_idx] = static_cast<int16_t>(hw_value);
+
+        RCLCPP_DEBUG(this->get_logger(), "Hand: MoveIt[%d] rad=%.4f max=%.4f scaled=%d inverted=%d -> HW[%d]",
+                     mi, moveit_radians[mi], max_r, scaled, hw_value, hw_idx);
+    }
+    hand_cmd.block = false;  // Non-blocking
+
+    RCLCPP_INFO(this->get_logger(), "Hand: HW angles=[%d,%d,%d,%d,%d,%d]",
+                hand_cmd.hand_angle[0], hand_cmd.hand_angle[1], hand_cmd.hand_angle[2],
+                hand_cmd.hand_angle[3], hand_cmd.hand_angle[4], hand_cmd.hand_angle[5]);
+
+    // Publish hand angle command (fire-and-forget)
+    hand_angle_publisher_->publish(hand_cmd);
+
+    // Cache commanded radians for feedback (used in both modes)
+    for(int i = 0; i < HAND_DOF; i++)
+    {
+        double clamped = moveit_radians[i];
+        if(clamped < 0.0) clamped = 0.0;
+        if(clamped > HAND_MAX_RAD[i]) clamped = HAND_MAX_RAD[i];
+        hand_joint_radians_[i].store(clamped);
+    }
+
+    // Publish open-loop feedback for driver joint_states
+    if(hand_feedback_mode_ == "open_loop")
+    {
+        std_msgs::msg::Float64MultiArray feedback_msg;
+        feedback_msg.data.resize(HAND_DOF);
+        for(int i = 0; i < HAND_DOF; i++)
+        {
+            feedback_msg.data[i] = hand_joint_radians_[i].load();
+        }
+        hand_feedback_publisher_->publish(feedback_msg);
+    }
+
+    // Fire-and-forget: succeed immediately
+    result->error_code = 0;
+    result->error_string = "";
+    goal_handle->succeed(result);
+    RCLCPP_INFO(this->get_logger(), "Hand: Goal succeeded (fire-and-forget)");
+}
+
+void Rm_Control::hand_state_callback(const rm_ros_interfaces::msg::Handstatus::SharedPtr msg)
+{
+    // UDP feedback: convert HW hand_pos (0-1000) -> MoveIt radians
+    // HW order: [little(0), ring(1), middle(2), index(3), thumb_flex(4), thumb_rot(5)]
+    // HW 1000 = open (0 rad), HW 0 = closed (max_rad)
+    for(int hi = 0; hi < HAND_DOF; hi++)
+    {
+        int mi = HAND_HW_TO_MOVEIT[hi];  // Map HW index -> MoveIt index
+        int hw_pos = msg->hand_pos[hi];   // 0-1000
+        double angle_rad = ((1000.0 - hw_pos) / 1000.0) * HAND_MAX_RAD[mi];
+        hand_joint_radians_[mi].store(angle_rad);
+    }
+
+    // Also publish as feedback for driver joint_states
+    std_msgs::msg::Float64MultiArray feedback_msg;
+    feedback_msg.data.resize(HAND_DOF);
+    for(int i = 0; i < HAND_DOF; i++)
+    {
+        feedback_msg.data[i] = hand_joint_radians_[i].load();
+    }
+    hand_feedback_publisher_->publish(feedback_msg);
 }
 
 /* 主函数主要用于动作订阅和套接字通信 */
