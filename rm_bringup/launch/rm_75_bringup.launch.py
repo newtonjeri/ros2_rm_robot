@@ -25,6 +25,8 @@ def generate_launch_description():
             'arm_namespace': 'left_arm',
             'action_name': '/left_arm_controller/follow_joint_trajectory',
             'pole_action_name': '/left_pole_controller/follow_joint_trajectory',
+            'hand_action_name': '/left_hand_controller/follow_joint_trajectory',
+            'hand_feedback_mode': 'open_loop',
         }.items()
     )
 
@@ -45,6 +47,8 @@ def generate_launch_description():
             'arm_namespace': 'right_arm',
             'action_name': '/right_arm_controller/follow_joint_trajectory',
             'pole_action_name': '/right_pole_controller/follow_joint_trajectory',
+            'hand_action_name': '/right_hand_controller/follow_joint_trajectory',
+            'hand_feedback_mode': 'open_loop',
         }.items()
     )
 

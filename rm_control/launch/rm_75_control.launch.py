@@ -17,10 +17,20 @@ def generate_launch_description():
         'pole_action_name', default_value='',
         description='Action server name for pole/lift controller (e.g. /left_pole_controller/follow_joint_trajectory). Empty disables pole support.')
 
+    hand_action_name_arg = DeclareLaunchArgument(
+        'hand_action_name', default_value='',
+        description='Action server name for hand controller (e.g. /left_hand_controller/follow_joint_trajectory). Empty disables hand support.')
+
+    hand_feedback_mode_arg = DeclareLaunchArgument(
+        'hand_feedback_mode', default_value='open_loop',
+        description='Hand feedback mode: open_loop (commanded values) or udp (from udp_hand_status topic).')
+
     ld = LaunchDescription()
     ld.add_action(arm_ns_arg)
     ld.add_action(action_name_arg)
     ld.add_action(pole_action_name_arg)
+    ld.add_action(hand_action_name_arg)
+    ld.add_action(hand_feedback_mode_arg)
 
     control_node = Node(
         package='rm_control',
@@ -30,7 +40,9 @@ def generate_launch_description():
             {'follow': True},
             {'arm_type': 75},
             {'action_name': LaunchConfiguration('action_name')},
-            {'pole_action_name': LaunchConfiguration('pole_action_name')}
+            {'pole_action_name': LaunchConfiguration('pole_action_name')},
+            {'hand_action_name': LaunchConfiguration('hand_action_name')},
+            {'hand_feedback_mode': LaunchConfiguration('hand_feedback_mode')}
         ],
         output='screen',
     )
