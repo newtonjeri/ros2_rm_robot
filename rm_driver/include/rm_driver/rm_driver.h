@@ -156,11 +156,8 @@ bool udp_expand_state_g = true;
 bool udp_lift_state_g = false;
 // 升降关节名称(用于joint_states)
 std::string pole_joint_name_g = "";
-// 灵巧手关节名称(用于joint_states)
+// 灵巧手关节名称(保留配置，但hand joint_states由rm_control直接发布)
 std::vector<std::string> hand_joint_names_g;
-// 灵巧手关节反馈弧度值(MoveIt顺序, open-loop或UDP)
-std::array<double, 6> hand_joint_feedback_g = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-std::mutex hand_feedback_mutex_g;
 // 关节速度状态信息
 bool udp_joint_speed_state_g = true;
 // 机械臂状态信息
@@ -807,6 +804,7 @@ private:
     bool udp_lift_state_= false;                       //设置升降关节主动上报
     std::string pole_joint_name_;                       //升降关节名称
     std::vector<std::string> hand_joint_names_;          //灵巧手关节名称
+
     bool udp_expand_state_= false;                     //设置拓展关节主动上报
     bool udp_arm_current_status_state_= false;         //设置机械臂状态主动上报
     bool udp_aloha_state_= false;                      //aloha状态主动上报
@@ -821,6 +819,8 @@ private:
     rclcpp::CallbackGroup::SharedPtr callback_group_sub3_;
     rclcpp::CallbackGroup::SharedPtr callback_group_sub4_;
     rclcpp::CallbackGroup::SharedPtr callback_group_sub5_;
+
+
 };
 
 class UdpPublisherNode : public rclcpp::Node
@@ -862,8 +862,7 @@ private:
     rclcpp::Publisher<rm_ros_interfaces::msg::Udpliftstate>::SharedPtr Lift_State_Result;                            //升降关节发布器
     rclcpp::Publisher<rm_ros_interfaces::msg::Udpexpandstate>::SharedPtr Expand_State_Result;                         //拓展关节发布器
     rclcpp::Publisher<rm_ros_interfaces::msg::Alohastate>::SharedPtr Aloha_State_Result;                              //aloha状态发布器
-    rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr Hand_Feedback_Sub;                              //灵巧手开环反馈订阅器
-    void hand_feedback_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg);                              //灵巧手反馈回调
+
     int connect_state = 0;                             //网络连接状态
     int come_time = 0;
     struct sockaddr_in clientAddr;
