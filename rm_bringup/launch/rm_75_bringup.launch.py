@@ -4,9 +4,15 @@ from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, GroupAction,
                             IncludeLaunchDescription, SetEnvironmentVariable)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node, PushRosNamespace
 
 def generate_launch_description():
+
+    # ==================== Launch Arguments ====================
+    hand_feedback_mode_arg = DeclareLaunchArgument(
+        'hand_feedback_mode', default_value='open_loop',
+        description='Hand feedback mode: open_loop (commanded values) or udp (from udp_hand_status).')
 
     # ==================== Left Arm ====================
     left_arm_driver = IncludeLaunchDescription(
@@ -26,7 +32,7 @@ def generate_launch_description():
             'action_name': '/left_arm_controller/follow_joint_trajectory',
             'pole_action_name': '/left_pole_controller/follow_joint_trajectory',
             'hand_action_name': '/left_hand_controller/follow_joint_trajectory',
-            'hand_feedback_mode': 'open_loop',
+            'hand_feedback_mode': LaunchConfiguration('hand_feedback_mode'),
         }.items()
     )
 
@@ -48,7 +54,7 @@ def generate_launch_description():
             'action_name': '/right_arm_controller/follow_joint_trajectory',
             'pole_action_name': '/right_pole_controller/follow_joint_trajectory',
             'hand_action_name': '/right_hand_controller/follow_joint_trajectory',
-            'hand_feedback_mode': 'open_loop',
+            'hand_feedback_mode': LaunchConfiguration('hand_feedback_mode'),
         }.items()
     )
 
@@ -65,6 +71,7 @@ def generate_launch_description():
     # )
 
     return LaunchDescription([
+        hand_feedback_mode_arg,
         left_arm_driver,
         left_arm_control,
         right_arm_driver,

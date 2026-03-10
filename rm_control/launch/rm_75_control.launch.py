@@ -23,7 +23,7 @@ def generate_launch_description():
 
     hand_feedback_mode_arg = DeclareLaunchArgument(
         'hand_feedback_mode', default_value='open_loop',
-        description='Hand feedback mode: open_loop (commanded values) or udp (from udp_hand_status topic).')
+        description='Hand feedback mode: open_loop (commanded values) or udp (from udp_hand_status).')
 
     ld = LaunchDescription()
     ld.add_action(arm_ns_arg)
