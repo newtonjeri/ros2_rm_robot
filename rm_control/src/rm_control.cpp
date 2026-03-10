@@ -344,8 +344,13 @@ Rm_Control::Rm_Control(std::string name) : Node(name)
         // Publisher for hand angle command (to driver)
         hand_angle_publisher_ = this->create_publisher<rm_ros_interfaces::msg::Handangle>("rm_driver/set_hand_angle_cmd", qos);
 
-        // Publisher for open-loop feedback (commanded radians -> driver joint_states)
-        hand_feedback_publisher_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("rm_driver/hand_joint_feedback", qos);
+        // Direct JointState publisher for hand joints (bypasses driver, publishes on arm_joint_states)
+        hand_state_publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("arm_joint_states", 10);
+
+        // Timer to publish hand joint state at 100Hz (consistent with arm UDP rate)
+        hand_state_timer_ = this->create_wall_timer(
+            std::chrono::milliseconds(10),
+            std::bind(&Rm_Control::hand_state_timer_callback, this));
 
         // Subscribe to UDP hand status if in udp mode
         if(hand_feedback_mode_ == "udp")
@@ -354,7 +359,6 @@ Rm_Control::Rm_Control(std::string name) : Node(name)
                 "rm_driver/udp_hand_status", 10,
                 std::bind(&Rm_Control::hand_state_callback, this, std::placeholders::_1));
         }
-
         // Initialize hand joint radians to 0 (all fingers open)
         for(int i = 0; i < HAND_DOF; i++)
         {
@@ -929,6 +933,19 @@ void Rm_Control::hand_handle_accepted(const std::shared_ptr<GoalHandleFJT> goal_
     .detach();
 }
 
+int Rm_Control::joint_name_to_hw_index(const std::string& name)
+{
+    // Match joint name suffix to HW channel index
+    // HW order: [little(0), ring(1), middle(2), index(3), thumb_flex(4), thumb_rot(5)]
+    if(name.find("little_1") != std::string::npos) return 0;
+    if(name.find("ring_1")   != std::string::npos) return 1;
+    if(name.find("middle_1") != std::string::npos) return 2;
+    if(name.find("index_1")  != std::string::npos) return 3;
+    if(name.find("thumb_2")  != std::string::npos) return 4;  // thumb flex/bend
+    if(name.find("thumb_1")  != std::string::npos) return 5;  // thumb rotation
+    return -1;
+}
+
 void Rm_Control::hand_execute_move(const std::shared_ptr<GoalHandleFJT> goal_handle)
 {
     const auto goal = goal_handle->get_goal();
@@ -943,34 +960,58 @@ void Rm_Control::hand_execute_move(const std::shared_ptr<GoalHandleFJT> goal_han
         return;
     }
 
-    // Use ONLY the last waypoint (no interpolation for hand)
-    auto last_point = goal->trajectory.points[point_num - 1];
+    // Get joint names from the trajectory request
+    const auto& joint_names = goal->trajectory.joint_names;
+    int num_joints = static_cast<int>(joint_names.size());
 
-    if(last_point.positions.size() < static_cast<size_t>(HAND_DOF))
+    if(num_joints <= 0 || num_joints > HAND_DOF)
     {
         result->error_code = -1;
-        result->error_string = "Last waypoint has insufficient position data (need 6 DOF)";
+        result->error_string = "Invalid number of hand joints: " + std::to_string(num_joints);
         goal_handle->abort(result);
-        RCLCPP_ERROR(this->get_logger(), "Hand: positions size=%zu, need %d", last_point.positions.size(), HAND_DOF);
         return;
     }
 
-    // Extract radian values in MoveIt order
-    // MoveIt order: [thumb1_flex, thumb2_rot, index, middle, ring, little]
-    double moveit_radians[HAND_DOF];
-    for(int i = 0; i < HAND_DOF; i++)
+    // Use ONLY the last waypoint (no interpolation for hand)
+    const auto& last_point = goal->trajectory.points[point_num - 1];
+
+    if(static_cast<int>(last_point.positions.size()) < num_joints)
     {
-        moveit_radians[i] = last_point.positions[i];
+        result->error_code = -1;
+        result->error_string = "Last waypoint positions size mismatch";
+        goal_handle->abort(result);
+        return;
     }
 
-    // Build Handangle message: convert MoveIt radians -> HW 0-1000 with reordering
-    // HW order: [little(0), ring(1), middle(2), index(3), thumb_flex(4), thumb_rot(5)]
-    // HW 1000 = open (0 rad), HW 0 = full flexion (max_rad)
-    rm_ros_interfaces::msg::Handangle hand_cmd;
-    for(int mi = 0; mi < HAND_DOF; mi++)
+    // Cache joint names from trajectory on first goal (for timer-based JointState publishing)
+    if(!hand_names_cached_)
     {
-        double angle_rad = moveit_radians[mi];
-        double max_r = HAND_MAX_RAD[mi];
+        hand_joint_names_.clear();
+        for(const auto& jn : joint_names)
+        {
+            hand_joint_names_.push_back(jn);
+        }
+        hand_names_cached_ = true;
+        RCLCPP_INFO(this->get_logger(), "Hand: Cached %d joint names from trajectory", num_joints);
+    }
+
+    // Initialize all HW channels to 1000 (fully open / release)
+    rm_ros_interfaces::msg::Handangle hand_cmd;
+    for(int i = 0; i < HAND_DOF; i++) hand_cmd.hand_angle[i] = 1000;
+
+    // Map each joint by name to its HW index and convert radians -> HW 0-1000
+    // HW 1000 = open (0 rad), HW 0 = full flexion (max_rad from URDF)
+    for(int i = 0; i < num_joints; i++)
+    {
+        int hw_idx = joint_name_to_hw_index(joint_names[i]);
+        if(hw_idx < 0)
+        {
+            RCLCPP_WARN(this->get_logger(), "Hand: Unknown joint '%s', skipping", joint_names[i].c_str());
+            continue;
+        }
+
+        double angle_rad = last_point.positions[i];
+        double max_r = HW_MAX_RAD[hw_idx];
 
         // Clamp to [0, max_rad]
         if(angle_rad < 0.0) angle_rad = 0.0;
@@ -983,13 +1024,13 @@ void Rm_Control::hand_execute_move(const std::shared_ptr<GoalHandleFJT> goal_han
 
         // Invert: HW 1000 = open (0 rad), HW 0 = closed (max_rad)
         int hw_value = 1000 - scaled;
-
-        // Map MoveIt index -> HW index
-        int hw_idx = HAND_MOVEIT_TO_HW[mi];
         hand_cmd.hand_angle[hw_idx] = static_cast<int16_t>(hw_value);
 
-        RCLCPP_DEBUG(this->get_logger(), "Hand: MoveIt[%d] rad=%.4f max=%.4f scaled=%d inverted=%d -> HW[%d]",
-                     mi, moveit_radians[mi], max_r, scaled, hw_value, hw_idx);
+        // Cache commanded radians in trajectory order for feedback
+        hand_joint_radians_[i].store(angle_rad);
+
+        RCLCPP_DEBUG(this->get_logger(), "Hand: '%s' rad=%.4f max=%.4f -> HW[%d]=%d",
+                     joint_names[i].c_str(), angle_rad, max_r, hw_idx, hw_value);
     }
     hand_cmd.block = false;  // Non-blocking
 
@@ -1000,26 +1041,8 @@ void Rm_Control::hand_execute_move(const std::shared_ptr<GoalHandleFJT> goal_han
     // Publish hand angle command (fire-and-forget)
     hand_angle_publisher_->publish(hand_cmd);
 
-    // Cache commanded radians for feedback (used in both modes)
-    for(int i = 0; i < HAND_DOF; i++)
-    {
-        double clamped = moveit_radians[i];
-        if(clamped < 0.0) clamped = 0.0;
-        if(clamped > HAND_MAX_RAD[i]) clamped = HAND_MAX_RAD[i];
-        hand_joint_radians_[i].store(clamped);
-    }
-
-    // Publish open-loop feedback for driver joint_states
-    if(hand_feedback_mode_ == "open_loop")
-    {
-        std_msgs::msg::Float64MultiArray feedback_msg;
-        feedback_msg.data.resize(HAND_DOF);
-        for(int i = 0; i < HAND_DOF; i++)
-        {
-            feedback_msg.data[i] = hand_joint_radians_[i].load();
-        }
-        hand_feedback_publisher_->publish(feedback_msg);
-    }
+    // Note: hand joint state is published by the hand_state_timer_callback at 100Hz,
+    // directly on arm_joint_states. No driver involvement needed.
 
     // Fire-and-forget: succeed immediately
     result->error_code = 0;
@@ -1030,25 +1053,38 @@ void Rm_Control::hand_execute_move(const std::shared_ptr<GoalHandleFJT> goal_han
 
 void Rm_Control::hand_state_callback(const rm_ros_interfaces::msg::Handstatus::SharedPtr msg)
 {
-    // UDP feedback: convert HW hand_pos (0-1000) -> MoveIt radians
+    // UDP feedback: convert HW hand_pos (0-1000) -> radians
     // HW order: [little(0), ring(1), middle(2), index(3), thumb_flex(4), thumb_rot(5)]
     // HW 1000 = open (0 rad), HW 0 = closed (max_rad)
     for(int hi = 0; hi < HAND_DOF; hi++)
     {
-        int mi = HAND_HW_TO_MOVEIT[hi];  // Map HW index -> MoveIt index
+        int fi = HW_TO_FEEDBACK_IDX[hi];  // Map HW index -> feedback array index
         int hw_pos = msg->hand_pos[hi];   // 0-1000
-        double angle_rad = ((1000.0 - hw_pos) / 1000.0) * HAND_MAX_RAD[mi];
-        hand_joint_radians_[mi].store(angle_rad);
+        double angle_rad = ((1000.0 - hw_pos) / 1000.0) * HW_MAX_RAD[hi];
+        hand_joint_radians_[fi].store(angle_rad);
     }
+    // Note: hand_state_timer_callback publishes the updated radians on arm_joint_states at 100Hz
+}
 
-    // Also publish as feedback for driver joint_states
-    std_msgs::msg::Float64MultiArray feedback_msg;
-    feedback_msg.data.resize(HAND_DOF);
-    for(int i = 0; i < HAND_DOF; i++)
+void Rm_Control::hand_state_timer_callback()
+{
+    // Publish hand joint state directly on arm_joint_states at a fixed rate.
+    // This keeps hand state self-contained in rm_control (no driver round-trip).
+    // In open-loop mode: publishes commanded values.
+    // In UDP mode: publishes converted sensor values.
+    if(!hand_names_cached_) return;  // Wait until first trajectory provides joint names
+
+    sensor_msgs::msg::JointState hand_js;
+    hand_js.header.stamp = this->now();
+    int n = static_cast<int>(hand_joint_names_.size());
+    hand_js.name.resize(n);
+    hand_js.position.resize(n);
+    for(int i = 0; i < n; i++)
     {
-        feedback_msg.data[i] = hand_joint_radians_[i].load();
+        hand_js.name[i] = hand_joint_names_[i];
+        hand_js.position[i] = hand_joint_radians_[i].load();
     }
-    hand_feedback_publisher_->publish(feedback_msg);
+    hand_state_publisher_->publish(hand_js);
 }
 
 /* 主函数主要用于动作订阅和套接字通信 */

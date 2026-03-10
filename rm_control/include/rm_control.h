@@ -9,14 +9,12 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 // #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/empty.hpp>
-
 //RM Robot msg
 #include "rm_ros_interfaces/msg/jointpos.hpp"
 #include "rm_ros_interfaces/msg/liftheight.hpp"
 #include "rm_ros_interfaces/msg/udpliftstate.hpp"
 #include "rm_ros_interfaces/msg/handangle.hpp"
 #include "rm_ros_interfaces/msg/handstatus.hpp"
-#include <std_msgs/msg/float64_multi_array.hpp>
 //#include "rm_ros_interfaces/msg/jointpos75.hpp"
 
 /* 使用变长数组 */
@@ -101,14 +99,20 @@ private:
     // Publisher for hand angle command (fire-and-forget to driver)
     rclcpp::Publisher<rm_ros_interfaces::msg::Handangle>::SharedPtr hand_angle_publisher_;
 
-    // Publisher for open-loop feedback (commanded radians → driver joint_states)
-    rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr hand_feedback_publisher_;
+    // Direct JointState publisher for hand joints (published at fixed rate on arm_joint_states)
+    rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr hand_state_publisher_;
+    rclcpp::TimerBase::SharedPtr hand_state_timer_;
+    void hand_state_timer_callback();
 
     // Subscriber for UDP hand status feedback
     rclcpp::Subscription<rm_ros_interfaces::msg::Handstatus>::SharedPtr hand_status_subscriber_;
 
+    // Cached hand joint names (from first trajectory goal)
+    std::vector<std::string> hand_joint_names_;
+    bool hand_names_cached_ = false;
+
     // Cached hand joint positions in radians (for open-loop or last-known feedback)
-    std::array<std::atomic<double>, 6> hand_joint_radians_{};  // MoveIt order
+    std::array<std::atomic<double>, 6> hand_joint_radians_{};  // order matches hand_joint_names_
     std::mutex hand_mutex_;
 
     // Hand action callbacks
@@ -121,14 +125,18 @@ private:
     void hand_state_callback(const rm_ros_interfaces::msg::Handstatus::SharedPtr msg);
 
     // Hand joint conversion constants
-    // MoveIt order: [thumb1_flex, thumb2_rot, index, middle, ring, little]
-    // HW order:     [little, ring, middle, index, thumb_flex, thumb_rot]
-    // max_rad per MoveIt joint index (from XACRO)
-    static constexpr double HAND_MAX_RAD[6] = {1.344, 1.246165, 1.344, 1.344, 1.344, 1.344};
-    // Mapping: MoveIt index -> HW index
-    static constexpr int HAND_MOVEIT_TO_HW[6] = {4, 5, 3, 2, 1, 0};
-    // Mapping: HW index -> MoveIt index
-    static constexpr int HAND_HW_TO_MOVEIT[6] = {5, 4, 3, 2, 0, 1};
+    // HW order: [little(0), ring(1), middle(2), index(3), thumb_flex(4), thumb_rot(5)]
+    // Max radians per HW index (from URDF joint limits)
+    static constexpr double HW_MAX_RAD[6] = {1.344, 1.344, 1.344, 1.344, 0.5236, 1.246165};
+
+    // Map HW index → feedback array index (matching driver's hand_joint_names config order)
+    // Driver config: [thumb_1(rot), thumb_2(flex), index, middle, ring, little]
+    // HW[0]=little→fb[5], HW[1]=ring→fb[4], HW[2]=middle→fb[3],
+    // HW[3]=index→fb[2], HW[4]=thumb_flex→fb[1], HW[5]=thumb_rot→fb[0]
+    static constexpr int HW_TO_FEEDBACK_IDX[6] = {5, 4, 3, 2, 1, 0};
+
+    // Map a joint name (from trajectory) to its HW index by suffix matching
+    static int joint_name_to_hw_index(const std::string& name);
 };
 
 #endif // Rm_Control_H
